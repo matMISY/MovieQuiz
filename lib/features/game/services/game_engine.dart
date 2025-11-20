@@ -6,6 +6,12 @@ import '../../../core/models/movie.dart';
 import '../../../core/models/actor.dart';
 import '../../../core/utils/string_utils.dart';
 
+/// Represents the current state of the game.
+///
+/// - [loading]: A new round is being generated
+/// - [playing]: The player is actively playing and can input an answer
+/// - [correct]: The player has answered correctly (temporary state before loading next round)
+/// - [error]: An error occurred (e.g., network error)
 enum GameState {
   loading,
   playing,
@@ -13,34 +19,116 @@ enum GameState {
   error,
 }
 
+/// Core game logic and state management for the Movie Quiz game.
+///
+/// This class implements the entire game flow using the ChangeNotifier pattern
+/// for reactive state management. It handles:
+/// - Round generation (selecting movies and actors)
+/// - Answer validation with fuzzy matching
+/// - Score tracking
+/// - Error handling and retry logic
+///
+/// The game follows this cycle:
+/// 1. [loading] - Generate a new round
+/// 2. [playing] - Display movies, wait for user input
+/// 3. [correct] - Show success message (1.5s)
+/// 4. Back to step 1 (infinite loop)
+///
+/// Example usage:
+/// ```dart
+/// final gameEngine = GameEngine();
+///
+/// // Listen to state changes
+/// gameEngine.addListener(() {
+///   print('Score: ${gameEngine.score}');
+///   print('State: ${gameEngine.state}');
+/// });
+///
+/// // Check an answer
+/// await gameEngine.checkAnswer('Brad Pitt');
+/// ```
 class GameEngine extends ChangeNotifier {
+  /// TMDB API service for fetching movie and actor data
   final TmdbApi _api = TmdbApi();
+
+  /// Random number generator for selecting actors and movies
   final Random _random = Random();
 
+  /// Current state of the game
   GameState _state = GameState.loading;
+
+  /// Player's score (number of correct answers)
   int _score = 0;
+
+  /// List of movies displayed in the current round
   List<Movie> _currentMovies = [];
+
+  /// List of actors that are valid answers for the current round
   List<Actor> _correctActors = [];
+
+  /// Error message to display (if state is [GameState.error])
   String _errorMessage = '';
+
+  /// Current user input (not currently used but available for future features)
   String _userInput = '';
+
+  /// Name of the last actor that was correctly guessed
   String _lastCorrectActor = '';
 
+  /// Current game state
   GameState get state => _state;
+
+  /// Player's current score
   int get score => _score;
+
+  /// Movies displayed in the current round
   List<Movie> get currentMovies => _currentMovies;
+
+  /// Error message (empty if no error)
   String get errorMessage => _errorMessage;
+
+  /// Current user input
   String get userInput => _userInput;
+
+  /// Name of the last correctly guessed actor
   String get lastCorrectActor => _lastCorrectActor;
 
+  /// Creates a [GameEngine] instance and initializes the first game round.
+  ///
+  /// The constructor triggers [_initializeGame] which starts the first round
+  /// generation asynchronously.
   GameEngine() {
     _initializeGame();
   }
 
+  /// Initializes the game by generating the first round.
+  ///
+  /// This is called automatically by the constructor.
   Future<void> _initializeGame() async {
     await generateNewRound();
   }
 
-  /// Generate a new round with movies and actors
+  /// Generates a new game round with 2-5 movies that share at least one actor.
+  ///
+  /// This method performs the following steps:
+  /// 1. Fetches popular actors from TMDB
+  /// 2. Randomly selects one actor
+  /// 3. Gets their filmography (filtered: after 1970, with poster)
+  /// 4. Randomly selects 2-5 movies from their filmography
+  /// 5. Fetches the cast for each movie
+  /// 6. Finds the intersection of all casts (common actors)
+  /// 7. Validates that at least one actor is common to all movies
+  ///
+  /// The method attempts up to 5 times to generate a valid round.
+  /// If all attempts fail, it sets the state to [GameState.error].
+  ///
+  /// Round generation criteria:
+  /// - Actor must have at least 2 valid movies
+  /// - All selected movies must have a poster image
+  /// - Movies must be released after 1970
+  /// - At least one actor must appear in all selected movies
+  ///
+  /// Throws no exceptions (errors are handled internally and set error state).
   Future<void> generateNewRound() async {
     _setState(GameState.loading);
     _errorMessage = '';
@@ -127,13 +215,51 @@ class GameEngine extends ChangeNotifier {
     }
   }
 
-  /// Update user input
+  /// Updates the user input field.
+  ///
+  /// This method is available for future features that might need to track
+  /// user input in real-time (e.g., autocomplete suggestions).
+  ///
+  /// Parameters:
+  /// - [input]: The current text in the input field
+  ///
+  /// This method triggers [notifyListeners] to update the UI.
   void updateInput(String input) {
     _userInput = input;
     notifyListeners();
   }
 
-  /// Check if the user's answer is correct
+  /// Checks if the user's answer matches any of the correct actors.
+  ///
+  /// This method uses two matching strategies:
+  /// 1. **Exact match**: Case-insensitive and accent-insensitive comparison
+  /// 2. **Fuzzy match**: String similarity > 85% (handles typos and variations)
+  ///
+  /// Matching is done using [StringUtils.normalize] to handle:
+  /// - Case differences ('Brad Pitt' = 'brad pitt')
+  /// - Accented characters ('José García' = 'jose garcia')
+  /// - Leading/trailing spaces
+  ///
+  /// If a match is found:
+  /// - Score is incremented
+  /// - Success state is shown for 1.5 seconds
+  /// - A new round is automatically generated
+  ///
+  /// Parameters:
+  /// - [answer]: The user's guess (actor name)
+  ///
+  /// Returns:
+  /// - `true` if the answer matches a correct actor
+  /// - `false` otherwise
+  ///
+  /// Example:
+  /// ```dart
+  /// // All of these would match if 'Brad Pitt' is a correct answer:
+  /// await checkAnswer('Brad Pitt');      // Exact match
+  /// await checkAnswer('brad pitt');      // Case insensitive
+  /// await checkAnswer('Brad  Pitt');     // Extra spaces
+  /// await checkAnswer('Brad Pit');       // Fuzzy match (>85% similar)
+  /// ```
   Future<bool> checkAnswer(String answer) async {
     if (answer.trim().isEmpty) {
       return false;
@@ -161,6 +287,18 @@ class GameEngine extends ChangeNotifier {
     return false;
   }
 
+  /// Handles the logic when a correct answer is provided.
+  ///
+  /// This internal method:
+  /// 1. Increments the score
+  /// 2. Stores the correct actor name for display
+  /// 3. Clears the user input
+  /// 4. Sets state to [GameState.correct]
+  /// 5. Waits 1.5 seconds to show success message
+  /// 6. Generates a new round
+  ///
+  /// Parameters:
+  /// - [actorName]: The name of the actor that was correctly guessed
   Future<void> _handleCorrectAnswer(String actorName) async {
     _score++;
     _lastCorrectActor = actorName;
@@ -172,17 +310,39 @@ class GameEngine extends ChangeNotifier {
     await generateNewRound();
   }
 
+  /// Updates the game state and notifies listeners.
+  ///
+  /// This internal method is used to update [_state] and trigger UI updates
+  /// through the ChangeNotifier pattern.
+  ///
+  /// Parameters:
+  /// - [newState]: The new game state
   void _setState(GameState newState) {
     _state = newState;
     notifyListeners();
   }
 
-  /// Retry after an error
+  /// Retries round generation after an error.
+  ///
+  /// This method is called when the user clicks a "Retry" button
+  /// after encountering an error (e.g., network failure).
+  ///
+  /// It attempts to generate a new round, which may succeed if
+  /// the error condition (e.g., network connectivity) has been resolved.
   Future<void> retry() async {
     await generateNewRound();
   }
 
-  /// Skip current round (optional feature)
+  /// Skips the current round and generates a new one.
+  ///
+  /// This optional feature allows players to skip a round if they don't
+  /// know the answer or find it too difficult. The score is not affected.
+  ///
+  /// Example usage:
+  /// ```dart
+  /// // Player clicks "Skip" button
+  /// await gameEngine.skipRound();
+  /// ```
   Future<void> skipRound() async {
     await generateNewRound();
   }
